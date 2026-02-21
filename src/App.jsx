@@ -21,6 +21,7 @@ function App() {
   const [logFilter, setLogFilter] = useState('ALL');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [monthlyGoal, setMonthlyGoal] = useState(500);
+  const [upgradeHistory, setUpgradeHistory] = useState([]); // MỚI: Lịch sử thời gian đập thẻ
 
   // Lắng nghe stats chính
   useEffect(() => {
@@ -28,6 +29,23 @@ function App() {
     const unsubscribe = onValue(statsRef, (snapshot) => {
       const data = snapshot.val();
       if (data) setStats(data);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // MỚI: Lắng nghe upgrade history (thời gian đập thẻ)
+  useEffect(() => {
+    const upgradeRef = ref(database, `devices/${DEVICE_ID}/upgrade_history`);
+    const unsubscribe = onValue(upgradeRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        const historyArray = Object.entries(data).map(([key, value]) => ({
+          id: key,
+          ...value
+        }));
+        historyArray.sort((a, b) => b.timestamp - a.timestamp);
+        setUpgradeHistory(historyArray.slice(0, 50)); // Lấy 50 lần gần nhất
+      }
     });
     return () => unsubscribe();
   }, []);
@@ -328,6 +346,55 @@ function App() {
     };
   };
 
+  // MỚI: Tính toán thống kê thời gian đập thẻ
+  const getUpgradeStats = () => {
+    if (upgradeHistory.length === 0) {
+      return {
+        last: stats?.last_upgrade_duration || 0,
+        avg: stats?.avg_upgrade_duration || 0,
+        min: 0,
+        max: 0,
+        total: 0
+      };
+    }
+    
+    const durations = upgradeHistory.map(u => u.duration_minutes || 0).filter(d => d > 0);
+    if (durations.length === 0) {
+      return {
+        last: stats?.last_upgrade_duration || 0,
+        avg: stats?.avg_upgrade_duration || 0,
+        min: 0,
+        max: 0,
+        total: 0
+      };
+    }
+    
+    const total = durations.length;
+    const sum = durations.reduce((a, b) => a + b, 0);
+    const avg = sum / total;
+    const min = Math.min(...durations);
+    const max = Math.max(...durations);
+    const last = upgradeHistory[0]?.duration_minutes || stats?.last_upgrade_duration || 0;
+    
+    return {
+      last: parseFloat(last).toFixed(1),
+      avg: avg.toFixed(1),
+      min: min.toFixed(1),
+      max: max.toFixed(1),
+      total: total
+    };
+  };
+
+  // MỚI: Chart data cho thời gian đập thẻ
+  const getUpgradeChartData = () => {
+    return upgradeHistory.slice(0, 20).reverse().map((upgrade, index) => ({
+      index: `#${index + 1}`,
+      time: upgrade.duration_minutes || 0,
+      buyTime: upgrade.buy_duration || 15,
+      target: 20
+    }));
+  };
+
   // Filter logs
   const filteredLogs = logFilter === 'ALL' 
     ? logs 
@@ -361,6 +428,7 @@ function App() {
   const efficiency = getEfficiency();
   const predictions = getPredictions();
   const peakHours = getPeakHours();
+  const upgradeStats = getUpgradeStats(); // MỚI
   const totalBP = (stats?.total_ct_processed || 0) * BP_PER_CT;
   const weekGrowth = lastWeekStats.total_ct > 0 
     ? (((weekStats.total_ct - lastWeekStats.total_ct) / lastWeekStats.total_ct) * 100).toFixed(1)
@@ -447,8 +515,8 @@ function App() {
           )}
         </div>
 
-        {/* Quick Stats Row */}
-        <div id="stats" className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {/* Quick Stats Row - ĐÃ SỬA: 5 cột + thêm card Đập thẻ */}
+        <div id="stats" className="grid grid-cols-2 md:grid-cols-5 gap-3">
           <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
             <div className="text-slate-400 text-xs mb-1">Trạng thái</div>
             <div className="text-xl font-bold">{getStatusText()}</div>
@@ -469,6 +537,13 @@ function App() {
           <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
             <div className="text-slate-400 text-xs mb-1">TB/CT</div>
             <div className="text-xl font-bold">{stats?.avg_time_per_ct || 0}p</div>
+          </div>
+
+          {/* MỚI: Card thời gian đập thẻ */}
+          <div className="bg-cyan-900/20 rounded-xl p-4 border border-cyan-700">
+            <div className="text-cyan-400 text-xs mb-1">⏱️ Đập thẻ</div>
+            <div className="text-xl font-bold text-cyan-300">{upgradeStats.last}p</div>
+            <div className="text-xs text-cyan-500">TB: {upgradeStats.avg}p</div>
           </div>
         </div>
 
@@ -531,6 +606,129 @@ function App() {
             <div className="text-3xl mb-2">📈</div>
             <div className="text-xl font-bold">{predictions.avgPerDay}</div>
             <div className="text-xs text-slate-400">CT/ngày</div>
+          </div>
+        </div>
+
+        {/* MỚI: Thống kê thời gian đập thẻ chi tiết */}
+        <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
+          <h2 className="text-lg font-bold mb-4">⏱️ Thống kê thời gian đập thẻ</h2>
+          
+          {/* Overview Cards */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+            <div className="bg-blue-900/20 rounded-lg p-3 border border-blue-700">
+              <div className="text-blue-400 text-xs mb-1">Lần gần nhất</div>
+              <div className="text-2xl font-bold text-blue-300">{upgradeStats.last}p</div>
+            </div>
+            
+            <div className="bg-green-900/20 rounded-lg p-3 border border-green-700">
+              <div className="text-green-400 text-xs mb-1">Trung bình</div>
+              <div className="text-2xl font-bold text-green-300">{upgradeStats.avg}p</div>
+            </div>
+            
+            <div className="bg-yellow-900/20 rounded-lg p-3 border border-yellow-700">
+              <div className="text-yellow-400 text-xs mb-1">Nhanh nhất</div>
+              <div className="text-2xl font-bold text-yellow-300">{upgradeStats.min}p</div>
+            </div>
+            
+            <div className="bg-red-900/20 rounded-lg p-3 border border-red-700">
+              <div className="text-red-400 text-xs mb-1">Chậm nhất</div>
+              <div className="text-2xl font-bold text-red-300">{upgradeStats.max}p</div>
+            </div>
+          </div>
+          
+          {/* Target Progress */}
+          <div className="mb-4">
+            <div className="flex justify-between text-sm mb-1">
+              <span>🎯 Mục tiêu: 20 phút/lần</span>
+              <span className={parseFloat(upgradeStats.avg) <= 20 ? 'text-green-400' : 'text-red-400'}>
+                {parseFloat(upgradeStats.avg) <= 20 ? '✅ Đạt' : '❌ Chưa đạt'}
+              </span>
+            </div>
+            <div className="bg-slate-700 rounded-full h-3">
+              <div 
+                className={`rounded-full h-3 transition-all ${
+                  parseFloat(upgradeStats.avg) <= 20 ? 'bg-green-500' : 'bg-red-500'
+                }`}
+                style={{ width: `${Math.min((20 / Math.max(parseFloat(upgradeStats.avg), 1)) * 100, 100)}%` }}
+              />
+            </div>
+            <div className="text-xs text-slate-400 mt-1">
+              {parseFloat(upgradeStats.avg) <= 20 
+                ? `⚡ Nhanh hơn mục tiêu ${(20 - parseFloat(upgradeStats.avg)).toFixed(1)}p`
+                : `⚠️ Chậm hơn mục tiêu ${(parseFloat(upgradeStats.avg) - 20).toFixed(1)}p`
+              }
+            </div>
+          </div>
+          
+          {/* Chart */}
+          {upgradeHistory.length > 0 && (
+            <ResponsiveContainer width="100%" height={200}>
+              <LineChart data={getUpgradeChartData()}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                <XAxis dataKey="index" stroke="#9ca3af" tick={{ fontSize: 10 }} />
+                <YAxis stroke="#9ca3af" />
+                <Tooltip contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569' }} />
+                <Legend />
+                <Line type="monotone" dataKey="time" stroke="#06b6d4" strokeWidth={2} name="Đập thẻ (p)" dot={{ fill: '#06b6d4' }} />
+                <Line type="monotone" dataKey="buyTime" stroke="#3b82f6" strokeWidth={2} name="Mua phôi (p)" strokeDasharray="5 5" />
+                <Line type="monotone" dataKey="target" stroke="#22c55e" strokeWidth={1} name="Mục tiêu" strokeDasharray="3 3" />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
+          
+          {/* Auto Adjust Info */}
+          <div className="mt-4 bg-green-900/20 border border-green-700 rounded-lg p-3">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-xl">⚙️</span>
+              <span className="font-bold text-green-400">Tự động điều chỉnh mua phôi: ✅ BẬT</span>
+            </div>
+            <div className="text-sm text-slate-300">
+              Công thức: <code className="bg-slate-900 px-2 py-0.5 rounded">Mua mới = Mua cũ × (20 / Thời gian đập)</code>
+            </div>
+            <div className="text-xs text-slate-400 mt-1">
+              📌 Mục tiêu: 20p/lần | Min: 5p | Max: 60p | Hiện tại: {stats?.remote_config?.buy_duration_minutes || 15}p
+            </div>
+          </div>
+          
+          {/* Recent History Table */}
+          <div className="mt-4">
+            <div className="text-sm font-bold mb-2">📜 Lịch sử 10 lần gần nhất:</div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-slate-700">
+                    <th className="text-left py-2 px-2">Thời gian</th>
+                    <th className="text-left py-2 px-2">Đập thẻ</th>
+                    <th className="text-left py-2 px-2">Mua phôi</th>
+                    <th className="text-left py-2 px-2">Mode</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {upgradeHistory.length === 0 ? (
+                    <tr><td colSpan="4" className="text-center py-4 text-slate-500">Chưa có dữ liệu</td></tr>
+                  ) : (
+                    upgradeHistory.slice(0, 10).map((upgrade) => (
+                      <tr key={upgrade.id} className="border-b border-slate-700/50">
+                        <td className="py-2 px-2">{upgrade.date} {upgrade.time}</td>
+                        <td className="py-2 px-2">
+                          <span className={parseFloat(upgrade.duration_minutes) <= 20 ? 'text-green-400' : 'text-red-400'}>
+                            {parseFloat(upgrade.duration_minutes).toFixed(1)}p
+                          </span>
+                        </td>
+                        <td className="py-2 px-2">{upgrade.buy_duration}p</td>
+                        <td className="py-2 px-2">
+                          <span className={`px-2 py-0.5 rounded text-xs ${
+                            upgrade.mode === '+3' ? 'bg-green-900/50' : 'bg-orange-900/50'
+                          }`}>
+                            {upgrade.mode}
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
 
@@ -751,6 +949,20 @@ function App() {
                   className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white mt-1"
                 />
               </div>
+              
+              {/* MỚI: Thông tin tự động điều chỉnh */}
+              <div className="mt-3 p-3 bg-green-900/20 rounded-lg border border-green-700">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-green-400">⚙️ Tự động điều chỉnh thời gian mua:</span>
+                  <span className="text-green-300 text-sm font-bold">✅ BẬT</span>
+                </div>
+                <div className="text-xs text-green-500 mt-2">
+                  📌 Mục tiêu: 20p/lần đập | Min: 5p | Max: 60p
+                </div>
+                <div className="text-xs text-slate-400 mt-1">
+                  Công thức: Mua mới = Mua cũ × (20 / Đập thẻ)
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -820,7 +1032,7 @@ function App() {
       {/* Footer */}
       <footer className="border-t border-slate-800 py-4 mt-8">
         <div className="max-w-7xl mx-auto px-4 text-center text-xs text-slate-500">
-          FCO Dashboard v3.0 — Full Analytics & Remote Control
+          FCO Dashboard v3.1 — Full Analytics & Remote Control + Upgrade Time Tracking
         </div>
       </footer>
     </div>

@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
 import { database, ref, onValue, push, set } from './firebase';
+import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { format, subDays, startOfDay, endOfDay } from 'date-fns';
 
 const DEVICE_ID = "PC_MAIN";
 
@@ -9,14 +11,59 @@ function App() {
   const [screenshots, setScreenshots] = useState([]);
   const [selectedScreenshot, setSelectedScreenshot] = useState(null);
   const [newBuyDuration, setNewBuyDuration] = useState(20);
+  const [dailyStats, setDailyStats] = useState({});
+  const [ctHistory, setCtHistory] = useState([]);
+  const [achievements, setAchievements] = useState(null);
+  const [chartView, setChartView] = useState('week'); // 'week', 'month'
 
-  // Lắng nghe stats
+  // Lắng nghe stats chính
   useEffect(() => {
     const statsRef = ref(database, `devices/${DEVICE_ID}`);
     const unsubscribe = onValue(statsRef, (snapshot) => {
       const data = snapshot.val();
       if (data) {
         setStats(data);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Lắng nghe daily stats
+  useEffect(() => {
+    const dailyRef = ref(database, `devices/${DEVICE_ID}/daily_stats`);
+    const unsubscribe = onValue(dailyRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        setDailyStats(data);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Lắng nghe CT history
+  useEffect(() => {
+    const historyRef = ref(database, `devices/${DEVICE_ID}/ct_history`);
+    const unsubscribe = onValue(historyRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        const historyArray = Object.entries(data).map(([key, value]) => ({
+          id: key,
+          ...value
+        }));
+        historyArray.sort((a, b) => b.timestamp - a.timestamp);
+        setCtHistory(historyArray.slice(0, 20)); // 20 gần nhất
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Lắng nghe achievements
+  useEffect(() => {
+    const achievRef = ref(database, `devices/${DEVICE_ID}/achievements`);
+    const unsubscribe = onValue(achievRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        setAchievements(data);
       }
     });
     return () => unsubscribe();
@@ -32,9 +79,8 @@ function App() {
           id: key,
           ...value
         }));
-        // Sắp xếp theo thời gian mới nhất
         logArray.sort((a, b) => new Date(b.time) - new Date(a.time));
-        setLogs(logArray.slice(0, 50)); // Chỉ lấy 50 logs gần nhất
+        setLogs(logArray.slice(0, 50));
       }
     });
     return () => unsubscribe();
@@ -50,7 +96,6 @@ function App() {
           id: key,
           ...value
         }));
-        // Sắp xếp theo thời gian mới nhất
         screenshotArray.sort((a, b) => new Date(b.time) - new Date(a.time));
         setScreenshots(screenshotArray);
       }
@@ -58,7 +103,7 @@ function App() {
     return () => unsubscribe();
   }, []);
 
-  // Gửi lệnh chụp màn hình
+  // Gửi lệnh
   const handleScreenshot = () => {
     const commandsRef = ref(database, `devices/${DEVICE_ID}/commands`);
     push(commandsRef, {
@@ -68,7 +113,6 @@ function App() {
     alert("📸 Đã gửi lệnh chụp màn hình!");
   };
 
-  // Gửi lệnh dừng
   const handleStop = () => {
     if (!confirm("Bạn chắc chắn muốn dừng bot?")) return;
     const commandsRef = ref(database, `devices/${DEVICE_ID}/commands`);
@@ -79,7 +123,6 @@ function App() {
     alert("🛑 Đã gửi lệnh dừng!");
   };
 
-  // Thay đổi thời gian mua phôi
   const handleChangeBuyDuration = () => {
     const duration = parseInt(newBuyDuration);
     if (isNaN(duration) || duration < 1 || duration > 60) {
@@ -102,16 +145,15 @@ function App() {
     return `${hours}h ${minutes}m`;
   };
 
-  // Kiểm tra heartbeat
+  // Kiểm tra online
   const isOnline = () => {
     if (!stats?.last_heartbeat) return false;
     const lastBeat = new Date(stats.last_heartbeat);
     const now = new Date();
-    const diff = (now - lastBeat) / 1000; // seconds
-    return diff < 120; // Nếu dưới 2 phút thì coi là online
+    const diff = (now - lastBeat) / 1000;
+    return diff < 120;
   };
 
-  // Status color
   const getStatusColor = () => {
     if (!isOnline()) return "bg-red-500";
     if (stats?.status === "RUNNING" || stats?.status === "UPGRADING" || stats?.status === "BUYING") return "bg-green-500";
@@ -123,6 +165,57 @@ function App() {
     if (!isOnline()) return "OFFLINE";
     return stats?.status || "UNKNOWN";
   };
+
+  // Chuẩn bị dữ liệu biểu đồ
+  const getChartData = () => {
+    const days = chartView === 'week' ? 7 : 30;
+    const data = [];
+    
+    for (let i = days - 1; i >= 0; i--) {
+      const date = format(subDays(new Date(), i), 'yyyy-MM-dd');
+      const dayData = dailyStats[date];
+      
+      data.push({
+        date: format(subDays(new Date(), i), 'dd/MM'),
+        ct: dayData?.total_ct || 0,
+        avgTime: dayData?.avg_time || 0
+      });
+    }
+    
+    return data;
+  };
+
+  // Stats hôm nay/tuần
+  const getTodayStats = () => {
+    const today = format(new Date(), 'yyyy-MM-dd');
+    return dailyStats[today] || { total_ct: 0, avg_time: 0 };
+  };
+
+  const getWeekStats = () => {
+    let totalCt = 0;
+    let totalTime = 0;
+    let count = 0;
+    
+    for (let i = 0; i < 7; i++) {
+      const date = format(subDays(new Date(), i), 'yyyy-MM-dd');
+      const dayData = dailyStats[date];
+      if (dayData) {
+        totalCt += dayData.total_ct || 0;
+        if (dayData.avg_time) {
+          totalTime += dayData.avg_time;
+          count++;
+        }
+      }
+    }
+    
+    return {
+      total_ct: totalCt,
+      avg_time: count > 0 ? (totalTime / count).toFixed(1) : 0
+    };
+  };
+
+  const todayStats = getTodayStats();
+  const weekStats = getWeekStats();
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white">
@@ -148,11 +241,14 @@ function App() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
-        {/* Stats Cards */}
+        {/* Stats Cards Row 1 */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl p-4 border border-slate-700">
             <div className="text-slate-400 text-sm mb-1">Trạng thái</div>
             <div className="text-2xl font-bold">{getStatusText()}</div>
+            <div className="text-xs text-slate-500 mt-1">
+              Mode: +{stats?.current_plus_mode || 3}
+            </div>
           </div>
           
           <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl p-4 border border-slate-700">
@@ -161,8 +257,11 @@ function App() {
           </div>
           
           <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl p-4 border border-slate-700">
-            <div className="text-slate-400 text-sm mb-1">Tổng CT đã đập</div>
-            <div className="text-2xl font-bold text-green-400">{stats?.total_ct_processed || 0}</div>
+            <div className="text-slate-400 text-sm mb-1">Tổng CT</div>
+            <div className="text-2xl font-bold text-green-400">
+              {stats?.total_ct_processed || 0}
+            </div>
+            <div className="text-xs text-slate-500 mt-1">Tích lũy</div>
           </div>
           
           <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl p-4 border border-slate-700">
@@ -171,15 +270,139 @@ function App() {
           </div>
         </div>
 
+        {/* Stats Cards Row 2 - Today & Week */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="bg-blue-900/20 backdrop-blur-sm rounded-xl p-4 border border-blue-700">
+            <div className="text-blue-400 text-sm mb-1">Hôm nay</div>
+            <div className="text-2xl font-bold text-blue-300">{todayStats.total_ct} CT</div>
+            <div className="text-xs text-blue-500 mt-1">
+              TB: {todayStats.avg_time || 0}p/CT
+            </div>
+          </div>
+
+          <div className="bg-purple-900/20 backdrop-blur-sm rounded-xl p-4 border border-purple-700">
+            <div className="text-purple-400 text-sm mb-1">Tuần này</div>
+            <div className="text-2xl font-bold text-purple-300">{weekStats.total_ct} CT</div>
+            <div className="text-xs text-purple-500 mt-1">
+              TB: {weekStats.avg_time}p/CT
+            </div>
+          </div>
+
+          <div className="bg-green-900/20 backdrop-blur-sm rounded-xl p-4 border border-green-700">
+            <div className="text-green-400 text-sm mb-1">TB Tổng</div>
+            <div className="text-2xl font-bold text-green-300">
+              {stats?.avg_time_per_ct || 0}p
+            </div>
+            <div className="text-xs text-green-500 mt-1">Mỗi CT</div>
+          </div>
+
+          <div className="bg-orange-900/20 backdrop-blur-sm rounded-xl p-4 border border-orange-700">
+            <div className="text-orange-400 text-sm mb-1">Kỷ lục</div>
+            <div className="text-2xl font-bold text-orange-300">
+              {achievements?.best_day?.count || 0}
+            </div>
+            <div className="text-xs text-orange-500 mt-1">
+              {achievements?.best_day?.date || '---'}
+            </div>
+          </div>
+        </div>
+
         {/* Current Step */}
         <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl p-4 border border-slate-700">
           <div className="text-slate-400 text-sm mb-2">Bước hiện tại</div>
           <div className="text-lg font-medium">{stats?.current_step || "Đang chờ..."}</div>
-          {stats?.avg_time_per_ct > 0 && (
-            <div className="text-sm text-slate-400 mt-2">
-              ⏱️ Trung bình: {stats.avg_time_per_ct} phút/CT
+        </div>
+
+        {/* Charts */}
+        <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl p-4 border border-slate-700">
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="text-lg font-bold">📊 Biểu đồ tiến độ</h2>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setChartView('week')}
+                className={`px-3 py-1 rounded ${chartView === 'week' ? 'bg-blue-600' : 'bg-slate-700'}`}
+              >
+                7 ngày
+              </button>
+              <button
+                onClick={() => setChartView('month')}
+                className={`px-3 py-1 rounded ${chartView === 'month' ? 'bg-blue-600' : 'bg-slate-700'}`}
+              >
+                30 ngày
+              </button>
             </div>
-          )}
+          </div>
+
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart data={getChartData()}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+              <XAxis dataKey="date" stroke="#9ca3af" />
+              <YAxis stroke="#9ca3af" />
+              <Tooltip 
+                contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569' }}
+                labelStyle={{ color: '#e5e7eb' }}
+              />
+              <Legend />
+              <Bar dataKey="ct" fill="#3b82f6" name="Số CT" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Avg Time Chart */}
+        <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl p-4 border border-slate-700">
+          <h2 className="text-lg font-bold mb-4">⏱️ Thời gian trung bình</h2>
+          <ResponsiveContainer width="100%" height={250}>
+            <LineChart data={getChartData()}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+              <XAxis dataKey="date" stroke="#9ca3af" />
+              <YAxis stroke="#9ca3af" />
+              <Tooltip 
+                contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569' }}
+                labelStyle={{ color: '#e5e7eb' }}
+              />
+              <Legend />
+              <Line type="monotone" dataKey="avgTime" stroke="#10b981" name="Phút/CT" strokeWidth={2} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* CT History Table */}
+        <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl p-4 border border-slate-700">
+          <h2 className="text-lg font-bold mb-4">📜 Lịch sử CT (20 gần nhất)</h2>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-700">
+                  <th className="text-left py-2 px-3">Thời gian</th>
+                  <th className="text-left py-2 px-3">Vòng</th>
+                  <th className="text-left py-2 px-3">Mode</th>
+                  <th className="text-left py-2 px-3">Thời lượng</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ctHistory.length === 0 ? (
+                  <tr>
+                    <td colSpan="4" className="text-center py-8 text-slate-500">
+                      Chưa có dữ liệu
+                    </td>
+                  </tr>
+                ) : (
+                  ctHistory.map((ct) => (
+                    <tr key={ct.id} className="border-b border-slate-700/50 hover:bg-slate-700/30">
+                      <td className="py-2 px-3">{ct.date} {ct.time}</td>
+                      <td className="py-2 px-3">#{ct.loop_number}</td>
+                      <td className="py-2 px-3">
+                        <span className={`px-2 py-1 rounded text-xs ${ct.mode === '+3' ? 'bg-green-900/50' : 'bg-orange-900/50'}`}>
+                          {ct.mode}
+                        </span>
+                      </td>
+                      <td className="py-2 px-3">{Math.round(ct.duration_seconds / 60)} phút</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
 
         {/* Controls */}
@@ -312,7 +535,7 @@ function App() {
       {/* Footer */}
       <footer className="border-t border-slate-800 py-4 mt-8">
         <div className="max-w-7xl mx-auto px-4 text-center text-sm text-slate-500">
-          FCO Auto Bot Dashboard v1.0 — Powered by Firebase Realtime Database
+          FCO Auto Bot Dashboard v2.0 — Persistent Data & Advanced Analytics
         </div>
       </footer>
     </div>

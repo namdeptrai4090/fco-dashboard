@@ -1,12 +1,22 @@
 import { useState, useEffect } from 'react';
-import { database, ref, onValue, push, set } from './firebase';
-import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import { database, ref, onValue, push, set, get } from './firebase';
+import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { format, subDays } from 'date-fns';
 
-const DEVICE_ID = "PC_MAIN";
-const BP_PER_CT = 20000; // Ước tính BP mỗi CT
+// KHÔNG CÒN HARDCODE DEVICE_ID
+// const DEVICE_ID = "PC_MAIN";  // XÓA DÒNG NÀY
+
+// Hằng số tính BP
+const BP_PER_CT = 22000;  // 22 nghìn tỷ BP / CT
+const BP_PER_MINUTE = 95; // 95 tỷ BP / phút đập
 
 function App() {
+  // === MỚI: STATE CHO ĐĂNG NHẬP ===
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [accountName, setAccountName] = useState('');
+  const [inputAccount, setInputAccount] = useState('');
+  const [availableAccounts, setAvailableAccounts] = useState([]);
+  
   const [stats, setStats] = useState(null);
   const [logs, setLogs] = useState([]);
   const [screenshots, setScreenshots] = useState([]);
@@ -21,22 +31,43 @@ function App() {
   const [logFilter, setLogFilter] = useState('ALL');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [monthlyGoal, setMonthlyGoal] = useState(500);
-  const [upgradeHistory, setUpgradeHistory] = useState([]); // MỚI: Lịch sử thời gian đập thẻ
+  const [upgradeHistory, setUpgradeHistory] = useState([]);
+  const [totalStats, setTotalStats] = useState(null);
 
-  // Lắng nghe stats chính
+  // === MỚI: LOAD DANH SÁCH TÀI KHOẢN ===
   useEffect(() => {
-    const statsRef = ref(database, `devices/${DEVICE_ID}`);
-    const unsubscribe = onValue(statsRef, (snapshot) => {
+    const devicesRef = ref(database, 'devices');
+    const unsubscribe = onValue(devicesRef, (snapshot) => {
       const data = snapshot.val();
-      if (data) setStats(data);
+      if (data) {
+        const accounts = Object.keys(data);
+        setAvailableAccounts(accounts);
+      }
     });
     return () => unsubscribe();
   }, []);
 
-  // MỚI: Lắng nghe upgrade history (thời gian đập thẻ)
+  // === MỚI: LOAD DATA KHI ĐÃ ĐĂNG NHẬP ===
   useEffect(() => {
-    const upgradeRef = ref(database, `devices/${DEVICE_ID}/upgrade_history`);
-    const unsubscribe = onValue(upgradeRef, (snapshot) => {
+    if (!isLoggedIn || !accountName) return;
+
+    // Stats chính
+    const statsRef = ref(database, `devices/${accountName}`);
+    const unsubStats = onValue(statsRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) setStats(data);
+    });
+
+    // Total stats (cho BP)
+    const totalRef = ref(database, `devices/${accountName}/total_stats`);
+    const unsubTotal = onValue(totalRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) setTotalStats(data);
+    });
+
+    // Upgrade history
+    const upgradeRef = ref(database, `devices/${accountName}/upgrade_history`);
+    const unsubUpgrade = onValue(upgradeRef, (snapshot) => {
       const data = snapshot.val();
       if (data) {
         const historyArray = Object.entries(data).map(([key, value]) => ({
@@ -44,36 +75,27 @@ function App() {
           ...value
         }));
         historyArray.sort((a, b) => b.timestamp - a.timestamp);
-        setUpgradeHistory(historyArray.slice(0, 50)); // Lấy 50 lần gần nhất
+        setUpgradeHistory(historyArray.slice(0, 50));
       }
     });
-    return () => unsubscribe();
-  }, []);
 
-  // Lắng nghe daily stats
-  useEffect(() => {
-    const dailyRef = ref(database, `devices/${DEVICE_ID}/daily_stats`);
-    const unsubscribe = onValue(dailyRef, (snapshot) => {
+    // Daily stats
+    const dailyRef = ref(database, `devices/${accountName}/daily_stats`);
+    const unsubDaily = onValue(dailyRef, (snapshot) => {
       const data = snapshot.val();
       if (data) setDailyStats(data);
     });
-    return () => unsubscribe();
-  }, []);
 
-  // Lắng nghe hourly stats
-  useEffect(() => {
-    const hourlyRef = ref(database, `devices/${DEVICE_ID}/hourly_stats`);
-    const unsubscribe = onValue(hourlyRef, (snapshot) => {
+    // Hourly stats
+    const hourlyRef = ref(database, `devices/${accountName}/hourly_stats`);
+    const unsubHourly = onValue(hourlyRef, (snapshot) => {
       const data = snapshot.val();
       if (data) setHourlyStats(data);
     });
-    return () => unsubscribe();
-  }, []);
 
-  // Lắng nghe CT history
-  useEffect(() => {
-    const historyRef = ref(database, `devices/${DEVICE_ID}/ct_history`);
-    const unsubscribe = onValue(historyRef, (snapshot) => {
+    // CT history
+    const historyRef = ref(database, `devices/${accountName}/ct_history`);
+    const unsubHistory = onValue(historyRef, (snapshot) => {
       const data = snapshot.val();
       if (data) {
         const historyArray = Object.entries(data).map(([key, value]) => ({
@@ -84,23 +106,17 @@ function App() {
         setCtHistory(historyArray.slice(0, 50));
       }
     });
-    return () => unsubscribe();
-  }, []);
 
-  // Lắng nghe achievements
-  useEffect(() => {
-    const achievRef = ref(database, `devices/${DEVICE_ID}/achievements`);
-    const unsubscribe = onValue(achievRef, (snapshot) => {
+    // Achievements
+    const achievRef = ref(database, `devices/${accountName}/achievements`);
+    const unsubAchiev = onValue(achievRef, (snapshot) => {
       const data = snapshot.val();
       if (data) setAchievements(data);
     });
-    return () => unsubscribe();
-  }, []);
 
-  // Lắng nghe config history
-  useEffect(() => {
-    const configRef = ref(database, `devices/${DEVICE_ID}/config_history`);
-    const unsubscribe = onValue(configRef, (snapshot) => {
+    // Config history
+    const configRef = ref(database, `devices/${accountName}/config_history`);
+    const unsubConfig = onValue(configRef, (snapshot) => {
       const data = snapshot.val();
       if (data) {
         const arr = Object.entries(data).map(([key, value]) => ({ id: key, ...value }));
@@ -108,13 +124,10 @@ function App() {
         setConfigHistory(arr.slice(0, 20));
       }
     });
-    return () => unsubscribe();
-  }, []);
 
-  // Lắng nghe logs
-  useEffect(() => {
-    const logsRef = ref(database, `devices/${DEVICE_ID}/logs`);
-    const unsubscribe = onValue(logsRef, (snapshot) => {
+    // Logs
+    const logsRef = ref(database, `devices/${accountName}/logs`);
+    const unsubLogs = onValue(logsRef, (snapshot) => {
       const data = snapshot.val();
       if (data) {
         const logArray = Object.entries(data).map(([key, value]) => ({
@@ -125,13 +138,10 @@ function App() {
         setLogs(logArray.slice(0, 100));
       }
     });
-    return () => unsubscribe();
-  }, []);
 
-  // Lắng nghe screenshots
-  useEffect(() => {
-    const screenshotsRef = ref(database, `devices/${DEVICE_ID}/screenshots`);
-    const unsubscribe = onValue(screenshotsRef, (snapshot) => {
+    // Screenshots
+    const screenshotsRef = ref(database, `devices/${accountName}/screenshots`);
+    const unsubScreenshots = onValue(screenshotsRef, (snapshot) => {
       const data = snapshot.val();
       if (data) {
         const screenshotArray = Object.entries(data).map(([key, value]) => ({
@@ -142,12 +152,53 @@ function App() {
         setScreenshots(screenshotArray);
       }
     });
-    return () => unsubscribe();
+
+    return () => {
+      unsubStats();
+      unsubTotal();
+      unsubUpgrade();
+      unsubDaily();
+      unsubHourly();
+      unsubHistory();
+      unsubAchiev();
+      unsubConfig();
+      unsubLogs();
+      unsubScreenshots();
+    };
+  }, [isLoggedIn, accountName]);
+
+  // === MỚI: HÀM ĐĂNG NHẬP ===
+  const handleLogin = () => {
+    const name = inputAccount.trim();
+    if (!name) {
+      alert('Vui lòng nhập tên tài khoản!');
+      return;
+    }
+    setAccountName(name);
+    setIsLoggedIn(true);
+    localStorage.setItem('fco_account', name);
+  };
+
+  const handleLogout = () => {
+    setIsLoggedIn(false);
+    setAccountName('');
+    setStats(null);
+    setTotalStats(null);
+    localStorage.removeItem('fco_account');
+  };
+
+  // Auto login từ localStorage
+  useEffect(() => {
+    const saved = localStorage.getItem('fco_account');
+    if (saved) {
+      setAccountName(saved);
+      setIsLoggedIn(true);
+    }
   }, []);
 
   // Commands
   const handleScreenshot = () => {
-    push(ref(database, `devices/${DEVICE_ID}/commands`), {
+    push(ref(database, `devices/${accountName}/commands`), {
       command: "SCREENSHOT",
       time: new Date().toISOString()
     });
@@ -156,7 +207,7 @@ function App() {
 
   const handleStop = () => {
     if (!confirm("Bạn chắc chắn muốn dừng bot?")) return;
-    push(ref(database, `devices/${DEVICE_ID}/commands`), {
+    push(ref(database, `devices/${accountName}/commands`), {
       command: "STOP",
       time: new Date().toISOString()
     });
@@ -164,7 +215,7 @@ function App() {
   };
 
   const handleStart = () => {
-    push(ref(database, `devices/${DEVICE_ID}/commands`), {
+    push(ref(database, `devices/${accountName}/commands`), {
       command: "START",
       time: new Date().toISOString()
     });
@@ -177,11 +228,35 @@ function App() {
       alert("Thời gian phải từ 1-60 phút!");
       return;
     }
-    set(ref(database, `devices/${DEVICE_ID}/remote_config/buy_duration_minutes`), duration);
+    set(ref(database, `devices/${accountName}/remote_config/buy_duration_minutes`), duration);
     alert(`⚙️ Đã đặt thời gian mua phôi thành ${duration} phút!`);
   };
 
-  // Tính toán
+  // === MỚI: TÍNH BP LỜI THEO CÔNG THỨC MỚI ===
+  const calculateBPProfit = () => {
+    if (!totalStats) return 0;
+    
+    const totalCT = totalStats.all_time || 0;
+    const totalMinutes = totalStats.total_upgrade_time_minutes || 0;
+    
+    // BP lời = (CT × 22,000 tỷ) - (phút × 95 tỷ)
+    const ctProfit = totalCT * BP_PER_CT;
+    const upgradeCost = totalMinutes * BP_PER_MINUTE;
+    
+    return ctProfit - upgradeCost;
+  };
+
+  const formatBP = (bpBillion) => {
+    if (bpBillion >= 1000000) {
+      return `${(bpBillion / 1000000).toFixed(2)} triệu tỷ`;
+    } else if (bpBillion >= 1000) {
+      return `${(bpBillion / 1000).toFixed(2)} nghìn tỷ`;
+    } else {
+      return `${bpBillion.toFixed(0)} tỷ`;
+    }
+  };
+
+  // Các hàm tính toán (giữ nguyên)
   const calculateUptime = (startTime) => {
     if (!startTime) return "---";
     const start = new Date(startTime);
@@ -228,7 +303,6 @@ function App() {
     return data;
   };
 
-  // Hourly chart data
   const getHourlyChartData = () => {
     const data = [];
     for (let i = 0; i < 24; i++) {
@@ -241,7 +315,6 @@ function App() {
     return data;
   };
 
-  // Peak hours
   const getPeakHours = () => {
     const sorted = Object.entries(hourlyStats)
       .map(([hour, count]) => ({ hour: `${hour}:00`, count }))
@@ -249,7 +322,6 @@ function App() {
     return sorted.slice(0, 3);
   };
 
-  // Stats calculations
   const getTodayStats = () => {
     const today = format(new Date(), 'yyyy-MM-dd');
     return dailyStats[today] || { total_ct: 0, avg_time: 0 };
@@ -309,7 +381,6 @@ function App() {
     };
   };
 
-  // Streak calculation
   const getStreak = () => {
     let streak = 0;
     for (let i = 0; i < 365; i++) {
@@ -323,7 +394,6 @@ function App() {
     return streak;
   };
 
-  // Efficiency
   const getEfficiency = () => {
     const totalLoops = stats?.current_loop || 0;
     const totalCt = stats?.total_ct_processed || 0;
@@ -331,7 +401,6 @@ function App() {
     return Math.round((totalCt / totalLoops) * 100);
   };
 
-  // Predictions
   const getPredictions = () => {
     const monthStats = getMonthStats();
     const avgPerDay = monthStats.total_ct / 30;
@@ -346,7 +415,6 @@ function App() {
     };
   };
 
-  // MỚI: Tính toán thống kê thời gian đập thẻ
   const getUpgradeStats = () => {
     if (upgradeHistory.length === 0) {
       return {
@@ -385,7 +453,6 @@ function App() {
     };
   };
 
-  // MỚI: Chart data cho thời gian đập thẻ
   const getUpgradeChartData = () => {
     return upgradeHistory.slice(0, 20).reverse().map((upgrade, index) => ({
       index: `#${index + 1}`,
@@ -395,12 +462,10 @@ function App() {
     }));
   };
 
-  // Filter logs
   const filteredLogs = logFilter === 'ALL' 
     ? logs 
     : logs.filter(log => log.level === logFilter);
 
-  // Export to CSV
   const exportToCSV = () => {
     const headers = ['Date', 'Time', 'Loop', 'Mode', 'Duration (min)'];
     const rows = ctHistory.map(ct => [
@@ -416,7 +481,7 @@ function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `fco_history_${format(new Date(), 'yyyy-MM-dd')}.csv`;
+    a.download = `fco_history_${accountName}_${format(new Date(), 'yyyy-MM-dd')}.csv`;
     a.click();
   };
 
@@ -428,14 +493,72 @@ function App() {
   const efficiency = getEfficiency();
   const predictions = getPredictions();
   const peakHours = getPeakHours();
-  const upgradeStats = getUpgradeStats(); // MỚI
-  const totalBP = (stats?.total_ct_processed || 0) * BP_PER_CT;
+  const upgradeStats = getUpgradeStats();
+  const bpProfit = calculateBPProfit();
   const weekGrowth = lastWeekStats.total_ct > 0 
     ? (((weekStats.total_ct - lastWeekStats.total_ct) / lastWeekStats.total_ct) * 100).toFixed(1)
     : 0;
 
-  const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
+  // === MÀN HÌNH ĐĂNG NHẬP ===
+  if (!isLoggedIn) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white flex items-center justify-center">
+        <div className="bg-slate-800/50 rounded-xl p-8 border border-slate-700 w-full max-w-md">
+          <div className="text-center mb-6">
+            <div className="w-16 h-16 rounded-xl bg-gradient-to-br from-blue-500 to-violet-600 flex items-center justify-center mx-auto mb-4">
+              <span className="text-4xl">🎮</span>
+            </div>
+            <h1 className="text-2xl font-bold">FCO Dashboard</h1>
+            <p className="text-slate-400 text-sm">Đăng nhập để xem thống kê</p>
+          </div>
 
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm text-slate-400 mb-1">Tên tài khoản</label>
+              <input
+                type="text"
+                value={inputAccount}
+                onChange={(e) => setInputAccount(e.target.value)}
+                onKeyPress={(e) => e.key === 'Enter' && handleLogin()}
+                placeholder="Nhập tên tài khoản..."
+                className="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-3 text-white focus:border-blue-500 focus:outline-none"
+              />
+            </div>
+
+            {availableAccounts.length > 0 && (
+              <div>
+                <label className="block text-sm text-slate-400 mb-1">Hoặc chọn tài khoản có sẵn</label>
+                <div className="flex flex-wrap gap-2">
+                  {availableAccounts.map(acc => (
+                    <button
+                      key={acc}
+                      onClick={() => setInputAccount(acc)}
+                      className={`px-3 py-1 rounded-lg text-sm ${
+                        inputAccount === acc 
+                          ? 'bg-blue-600 text-white' 
+                          : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                      }`}
+                    >
+                      {acc}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <button
+              onClick={handleLogin}
+              className="w-full bg-gradient-to-r from-blue-600 to-violet-600 hover:from-blue-700 hover:to-violet-700 font-bold py-3 px-4 rounded-lg transition-all"
+            >
+              🚀 Đăng nhập
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // === MÀN HÌNH CHÍNH (ĐÃ ĐĂNG NHẬP) ===
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white">
       {/* Mobile Menu Button */}
@@ -469,54 +592,42 @@ function App() {
               </div>
               <div>
                 <h1 className="text-lg md:text-xl font-bold">FCO Dashboard</h1>
-                <p className="text-xs text-slate-400 hidden md:block">T.Courtois 24/7 Automation</p>
+                <p className="text-xs text-slate-400 hidden md:block">👤 {accountName}</p>
               </div>
             </div>
             <div className="flex items-center gap-3">
               <div className={`w-3 h-3 rounded-full ${getStatusColor()} animate-pulse`}></div>
               <span className="text-sm font-medium">{getStatusText()}</span>
               <span className="text-xs text-slate-400 hidden md:inline">
-                Mode: +{stats?.current_plus_mode || 3}
+                +{stats?.current_plus_mode || 3}
               </span>
+              <button
+                onClick={handleLogout}
+                className="bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded text-sm"
+              >
+                🚪 Đăng xuất
+              </button>
             </div>
           </div>
         </div>
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
-        {/* Alerts Section */}
+        {/* Alerts */}
         <div id="alerts" className="space-y-2">
           {!isOnline() && (
             <div className="bg-red-900/30 border border-red-700 rounded-lg p-3 flex items-center gap-3">
               <span className="text-2xl">🔴</span>
               <div>
                 <div className="font-bold text-red-400">Tool Offline!</div>
-                <div className="text-sm text-red-300">Kiểm tra kết nối ngay</div>
-              </div>
-            </div>
-          )}
-          {todayStats.total_ct >= 100 && (
-            <div className="bg-green-900/30 border border-green-700 rounded-lg p-3 flex items-center gap-3">
-              <span className="text-2xl">🎉</span>
-              <div>
-                <div className="font-bold text-green-400">Đạt 100 CT hôm nay!</div>
-                <div className="text-sm text-green-300">Tiếp tục phát huy!</div>
-              </div>
-            </div>
-          )}
-          {parseFloat(weekGrowth) < -10 && (
-            <div className="bg-yellow-900/30 border border-yellow-700 rounded-lg p-3 flex items-center gap-3">
-              <span className="text-2xl">⚠️</span>
-              <div>
-                <div className="font-bold text-yellow-400">Hiệu suất giảm {Math.abs(weekGrowth)}%</div>
-                <div className="text-sm text-yellow-300">So với tuần trước</div>
+                <div className="text-sm text-red-300">Kiểm tra kết nối</div>
               </div>
             </div>
           )}
         </div>
 
-        {/* Quick Stats Row - ĐÃ SỬA: 5 cột + thêm card Đập thẻ */}
-        <div id="stats" className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        {/* Quick Stats - THÊM BP LỜI */}
+        <div id="stats" className="grid grid-cols-2 md:grid-cols-6 gap-3">
           <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
             <div className="text-slate-400 text-xs mb-1">Trạng thái</div>
             <div className="text-xl font-bold">{getStatusText()}</div>
@@ -526,7 +637,6 @@ function App() {
           <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
             <div className="text-slate-400 text-xs mb-1">Tổng CT</div>
             <div className="text-xl font-bold text-green-400">{stats?.total_ct_processed || 0}</div>
-            <div className="text-xs text-slate-500">Tích lũy</div>
           </div>
           
           <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
@@ -539,11 +649,55 @@ function App() {
             <div className="text-xl font-bold">{stats?.avg_time_per_ct || 0}p</div>
           </div>
 
-          {/* MỚI: Card thời gian đập thẻ */}
           <div className="bg-cyan-900/20 rounded-xl p-4 border border-cyan-700">
             <div className="text-cyan-400 text-xs mb-1">⏱️ Đập thẻ</div>
             <div className="text-xl font-bold text-cyan-300">{upgradeStats.last}p</div>
             <div className="text-xs text-cyan-500">TB: {upgradeStats.avg}p</div>
+          </div>
+
+          {/* MỚI: BP LỜI */}
+          <div className="bg-yellow-900/20 rounded-xl p-4 border border-yellow-700">
+            <div className="text-yellow-400 text-xs mb-1">💰 BP Lời</div>
+            <div className="text-lg font-bold text-yellow-300">{formatBP(bpProfit)}</div>
+            <div className="text-xs text-yellow-500">
+              {totalStats?.total_upgrade_time_minutes?.toFixed(0) || 0}p đập
+            </div>
+          </div>
+        </div>
+
+        {/* BP PROFIT DETAIL */}
+        <div className="bg-yellow-900/20 rounded-xl p-4 border border-yellow-700">
+          <h2 className="text-lg font-bold mb-3">💰 Chi tiết BP Lời</h2>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="bg-green-900/30 rounded-lg p-3">
+              <div className="text-green-400 text-sm">Thu từ CT</div>
+              <div className="text-xl font-bold text-green-300">
+                +{formatBP((stats?.total_ct_processed || 0) * BP_PER_CT)}
+              </div>
+              <div className="text-xs text-green-500">
+                {stats?.total_ct_processed || 0} CT × 22k tỷ
+              </div>
+            </div>
+            
+            <div className="bg-red-900/30 rounded-lg p-3">
+              <div className="text-red-400 text-sm">Chi phí đập</div>
+              <div className="text-xl font-bold text-red-300">
+                -{formatBP((totalStats?.total_upgrade_time_minutes || 0) * BP_PER_MINUTE)}
+              </div>
+              <div className="text-xs text-red-500">
+                {totalStats?.total_upgrade_time_minutes?.toFixed(0) || 0}p × 95 tỷ
+              </div>
+            </div>
+            
+            <div className="bg-yellow-900/30 rounded-lg p-3">
+              <div className="text-yellow-400 text-sm">Lợi nhuận</div>
+              <div className={`text-xl font-bold ${bpProfit >= 0 ? 'text-green-300' : 'text-red-300'}`}>
+                {bpProfit >= 0 ? '+' : ''}{formatBP(bpProfit)}
+              </div>
+              <div className="text-xs text-yellow-500">
+                Công thức: CT×22k - Phút×95
+              </div>
+            </div>
           </div>
         </div>
 
@@ -553,7 +707,7 @@ function App() {
           <div className="text-lg font-medium">{stats?.current_step || "Đang chờ..."}</div>
         </div>
 
-        {/* Time Stats Cards */}
+        {/* Time Stats */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <div className="bg-blue-900/20 rounded-xl p-4 border border-blue-700">
             <div className="text-blue-400 text-xs mb-1">Hôm nay</div>
@@ -572,7 +726,6 @@ function App() {
           <div className="bg-orange-900/20 rounded-xl p-4 border border-orange-700">
             <div className="text-orange-400 text-xs mb-1">Tháng này</div>
             <div className="text-xl font-bold text-orange-300">{monthStats.total_ct} CT</div>
-            <div className="text-xs text-orange-500">TB: {monthStats.avg_time}p</div>
           </div>
 
           <div className="bg-green-900/20 rounded-xl p-4 border border-green-700">
@@ -587,7 +740,7 @@ function App() {
           <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700 text-center">
             <div className="text-3xl mb-2">🔥</div>
             <div className="text-2xl font-bold">{streak}</div>
-            <div className="text-xs text-slate-400">Streak (ngày)</div>
+            <div className="text-xs text-slate-400">Streak</div>
           </div>
           
           <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700 text-center">
@@ -597,26 +750,25 @@ function App() {
           </div>
           
           <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700 text-center">
-            <div className="text-3xl mb-2">💰</div>
-            <div className="text-xl font-bold">{(totalBP / 1000000).toFixed(1)}M</div>
-            <div className="text-xs text-slate-400">BP (ước tính)</div>
-          </div>
-          
-          <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700 text-center">
             <div className="text-3xl mb-2">📈</div>
             <div className="text-xl font-bold">{predictions.avgPerDay}</div>
             <div className="text-xs text-slate-400">CT/ngày</div>
           </div>
+          
+          <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700 text-center">
+            <div className="text-3xl mb-2">🎯</div>
+            <div className="text-xl font-bold">~{predictions.endOfMonth}</div>
+            <div className="text-xs text-slate-400">Cuối tháng</div>
+          </div>
         </div>
 
-        {/* MỚI: Thống kê thời gian đập thẻ chi tiết */}
+        {/* Upgrade Time Stats */}
         <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
-          <h2 className="text-lg font-bold mb-4">⏱️ Thống kê thời gian đập thẻ</h2>
+          <h2 className="text-lg font-bold mb-4">⏱️ Thời gian đập thẻ</h2>
           
-          {/* Overview Cards */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
             <div className="bg-blue-900/20 rounded-lg p-3 border border-blue-700">
-              <div className="text-blue-400 text-xs mb-1">Lần gần nhất</div>
+              <div className="text-blue-400 text-xs mb-1">Gần nhất</div>
               <div className="text-2xl font-bold text-blue-300">{upgradeStats.last}p</div>
             </div>
             
@@ -636,31 +788,6 @@ function App() {
             </div>
           </div>
           
-          {/* Target Progress */}
-          <div className="mb-4">
-            <div className="flex justify-between text-sm mb-1">
-              <span>🎯 Mục tiêu: 20 phút/lần</span>
-              <span className={parseFloat(upgradeStats.avg) <= 20 ? 'text-green-400' : 'text-red-400'}>
-                {parseFloat(upgradeStats.avg) <= 20 ? '✅ Đạt' : '❌ Chưa đạt'}
-              </span>
-            </div>
-            <div className="bg-slate-700 rounded-full h-3">
-              <div 
-                className={`rounded-full h-3 transition-all ${
-                  parseFloat(upgradeStats.avg) <= 20 ? 'bg-green-500' : 'bg-red-500'
-                }`}
-                style={{ width: `${Math.min((20 / Math.max(parseFloat(upgradeStats.avg), 1)) * 100, 100)}%` }}
-              />
-            </div>
-            <div className="text-xs text-slate-400 mt-1">
-              {parseFloat(upgradeStats.avg) <= 20 
-                ? `⚡ Nhanh hơn mục tiêu ${(20 - parseFloat(upgradeStats.avg)).toFixed(1)}p`
-                : `⚠️ Chậm hơn mục tiêu ${(parseFloat(upgradeStats.avg) - 20).toFixed(1)}p`
-              }
-            </div>
-          </div>
-          
-          {/* Chart */}
           {upgradeHistory.length > 0 && (
             <ResponsiveContainer width="100%" height={200}>
               <LineChart data={getUpgradeChartData()}>
@@ -669,126 +796,18 @@ function App() {
                 <YAxis stroke="#9ca3af" />
                 <Tooltip contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569' }} />
                 <Legend />
-                <Line type="monotone" dataKey="time" stroke="#06b6d4" strokeWidth={2} name="Đập thẻ (p)" dot={{ fill: '#06b6d4' }} />
-                <Line type="monotone" dataKey="buyTime" stroke="#3b82f6" strokeWidth={2} name="Mua phôi (p)" strokeDasharray="5 5" />
+                <Line type="monotone" dataKey="time" stroke="#06b6d4" strokeWidth={2} name="Đập (p)" />
+                <Line type="monotone" dataKey="buyTime" stroke="#3b82f6" strokeWidth={2} name="Mua (p)" strokeDasharray="5 5" />
                 <Line type="monotone" dataKey="target" stroke="#22c55e" strokeWidth={1} name="Mục tiêu" strokeDasharray="3 3" />
               </LineChart>
             </ResponsiveContainer>
           )}
-          
-          {/* Auto Adjust Info */}
-          <div className="mt-4 bg-green-900/20 border border-green-700 rounded-lg p-3">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-xl">⚙️</span>
-              <span className="font-bold text-green-400">Tự động điều chỉnh mua phôi: ✅ BẬT</span>
-            </div>
-            <div className="text-sm text-slate-300">
-              Công thức: <code className="bg-slate-900 px-2 py-0.5 rounded">Mua mới = Mua cũ × (20 / Thời gian đập)</code>
-            </div>
-            <div className="text-xs text-slate-400 mt-1">
-              📌 Mục tiêu: 20p/lần | Min: 5p | Max: 60p | Hiện tại: {stats?.remote_config?.buy_duration_minutes || 15}p
-            </div>
-          </div>
-          
-          {/* Recent History Table */}
-          <div className="mt-4">
-            <div className="text-sm font-bold mb-2">📜 Lịch sử 10 lần gần nhất:</div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="border-b border-slate-700">
-                    <th className="text-left py-2 px-2">Thời gian</th>
-                    <th className="text-left py-2 px-2">Đập thẻ</th>
-                    <th className="text-left py-2 px-2">Mua phôi</th>
-                    <th className="text-left py-2 px-2">Mode</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {upgradeHistory.length === 0 ? (
-                    <tr><td colSpan="4" className="text-center py-4 text-slate-500">Chưa có dữ liệu</td></tr>
-                  ) : (
-                    upgradeHistory.slice(0, 10).map((upgrade) => (
-                      <tr key={upgrade.id} className="border-b border-slate-700/50">
-                        <td className="py-2 px-2">{upgrade.date} {upgrade.time}</td>
-                        <td className="py-2 px-2">
-                          <span className={parseFloat(upgrade.duration_minutes) <= 20 ? 'text-green-400' : 'text-red-400'}>
-                            {parseFloat(upgrade.duration_minutes).toFixed(1)}p
-                          </span>
-                        </td>
-                        <td className="py-2 px-2">{upgrade.buy_duration}p</td>
-                        <td className="py-2 px-2">
-                          <span className={`px-2 py-0.5 rounded text-xs ${
-                            upgrade.mode === '+3' ? 'bg-green-900/50' : 'bg-orange-900/50'
-                          }`}>
-                            {upgrade.mode}
-                          </span>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-
-        {/* Week Comparison */}
-        <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
-          <h2 className="text-lg font-bold mb-4">📊 So sánh với tuần trước</h2>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="text-center">
-              <div className="text-sm text-slate-400">Tuần này</div>
-              <div className="text-2xl font-bold text-blue-400">{weekStats.total_ct} CT</div>
-            </div>
-            <div className="text-center">
-              <div className="text-sm text-slate-400">Tuần trước</div>
-              <div className="text-2xl font-bold text-slate-400">{lastWeekStats.total_ct} CT</div>
-            </div>
-          </div>
-          <div className="mt-4 text-center">
-            <span className={`text-lg font-bold ${parseFloat(weekGrowth) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-              {parseFloat(weekGrowth) >= 0 ? '📈' : '📉'} {weekGrowth}%
-            </span>
-          </div>
-        </div>
-
-        {/* Goals & Predictions */}
-        <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
-          <h2 className="text-lg font-bold mb-4">🎯 Mục tiêu & Dự đoán</h2>
-          <div className="space-y-4">
-            <div>
-              <div className="flex justify-between text-sm mb-1">
-                <span>Mục tiêu tháng: {monthlyGoal} CT</span>
-                <span>{Math.round((monthStats.total_ct / monthlyGoal) * 100)}%</span>
-              </div>
-              <div className="bg-slate-700 rounded-full h-3">
-                <div 
-                  className="bg-blue-500 rounded-full h-3 transition-all"
-                  style={{ width: `${Math.min((monthStats.total_ct / monthlyGoal) * 100, 100)}%` }}
-                />
-              </div>
-              <div className="text-xs text-slate-400 mt-1">
-                Còn {Math.max(monthlyGoal - monthStats.total_ct, 0)} CT | 
-                Cần ~{Math.ceil((monthlyGoal - monthStats.total_ct) / (new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate() - new Date().getDate() || 1))} CT/ngày
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-4 text-center">
-              <div>
-                <div className="text-slate-400 text-xs">Dự đoán cuối tháng</div>
-                <div className="text-xl font-bold text-blue-400">~{predictions.endOfMonth} CT</div>
-              </div>
-              <div>
-                <div className="text-slate-400 text-xs">Dự đoán cuối năm</div>
-                <div className="text-xl font-bold text-purple-400">~{predictions.endOfYear} CT</div>
-              </div>
-            </div>
-          </div>
         </div>
 
         {/* CT Chart */}
         <div id="charts" className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
           <div className="flex justify-between items-center mb-4">
-            <h2 className="text-lg font-bold">📊 Số CT theo ngày</h2>
+            <h2 className="text-lg font-bold">📊 CT theo ngày</h2>
             <div className="flex gap-2">
               <button onClick={() => setChartView('week')} className={`px-3 py-1 rounded text-sm ${chartView === 'week' ? 'bg-blue-600' : 'bg-slate-700'}`}>7 ngày</button>
               <button onClick={() => setChartView('month')} className={`px-3 py-1 rounded text-sm ${chartView === 'month' ? 'bg-blue-600' : 'bg-slate-700'}`}>30 ngày</button>
@@ -805,23 +824,9 @@ function App() {
           </ResponsiveContainer>
         </div>
 
-        {/* Avg Time Chart */}
-        <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
-          <h2 className="text-lg font-bold mb-4">⏱️ Thời gian TB (phút/CT)</h2>
-          <ResponsiveContainer width="100%" height={200}>
-            <LineChart data={getChartData()}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-              <XAxis dataKey="date" stroke="#9ca3af" tick={{ fontSize: 12 }} />
-              <YAxis stroke="#9ca3af" />
-              <Tooltip contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569' }} />
-              <Line type="monotone" dataKey="avgTime" stroke="#10b981" strokeWidth={2} name="Phút" />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-
         {/* Hourly Stats */}
         <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
-          <h2 className="text-lg font-bold mb-4">🕐 Thống kê theo giờ</h2>
+          <h2 className="text-lg font-bold mb-4">🕐 Theo giờ</h2>
           <ResponsiveContainer width="100%" height={200}>
             <BarChart data={getHourlyChartData()}>
               <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
@@ -832,73 +837,15 @@ function App() {
             </BarChart>
           </ResponsiveContainer>
           
-          {/* Peak Hours */}
           <div className="mt-4">
-            <div className="text-sm font-bold mb-2">🏆 Khung giờ vàng:</div>
+            <div className="text-sm font-bold mb-2">🏆 Giờ vàng:</div>
             <div className="flex gap-2 flex-wrap">
               {peakHours.map((h, i) => (
                 <span key={h.hour} className={`px-3 py-1 rounded text-sm ${i === 0 ? 'bg-yellow-600' : i === 1 ? 'bg-slate-500' : 'bg-orange-700'}`}>
-                  {i === 0 ? '🥇' : i === 1 ? '🥈' : '🥉'} {h.hour} ({h.count} CT)
+                  {i === 0 ? '🥇' : i === 1 ? '🥈' : '🥉'} {h.hour} ({h.count})
                 </span>
               ))}
             </div>
-          </div>
-        </div>
-
-        {/* CT History Table */}
-        <div id="history" className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
-          <div className="flex justify-between items-center mb-4">
-            <h2 className="text-lg font-bold">📜 Lịch sử CT</h2>
-            <button onClick={exportToCSV} className="bg-green-600 hover:bg-green-700 px-3 py-1 rounded text-sm">
-              📥 Export CSV
-            </button>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-slate-700">
-                  <th className="text-left py-2 px-2">Thời gian</th>
-                  <th className="text-left py-2 px-2">Loop</th>
-                  <th className="text-left py-2 px-2">Mode</th>
-                  <th className="text-left py-2 px-2">Phút</th>
-                </tr>
-              </thead>
-              <tbody>
-                {ctHistory.length === 0 ? (
-                  <tr><td colSpan="4" className="text-center py-8 text-slate-500">Chưa có dữ liệu</td></tr>
-                ) : (
-                  ctHistory.slice(0, 10).map((ct) => (
-                    <tr key={ct.id} className="border-b border-slate-700/50">
-                      <td className="py-2 px-2 text-xs">{ct.date} {ct.time}</td>
-                      <td className="py-2 px-2">#{ct.loop_number}</td>
-                      <td className="py-2 px-2">
-                        <span className={`px-2 py-0.5 rounded text-xs ${ct.mode === '+3' ? 'bg-green-900/50' : 'bg-orange-900/50'}`}>
-                          {ct.mode}
-                        </span>
-                      </td>
-                      <td className="py-2 px-2">{Math.round(ct.duration_seconds / 60)}</td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        {/* Config History */}
-        <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
-          <h2 className="text-lg font-bold mb-4">📝 Lịch sử thay đổi config</h2>
-          <div className="space-y-2 max-h-48 overflow-y-auto">
-            {configHistory.length === 0 ? (
-              <div className="text-slate-500 text-center py-4">Chưa có thay đổi</div>
-            ) : (
-              configHistory.map((cfg) => (
-                <div key={cfg.id} className="flex justify-between items-center text-sm bg-slate-900/50 p-2 rounded">
-                  <span className="text-slate-400">{cfg.time}</span>
-                  <span>{cfg.key}: {cfg.old} → {cfg.new}</span>
-                </div>
-              ))
-            )}
           </div>
         </div>
 
@@ -914,16 +861,16 @@ function App() {
                 🛑 Stop
               </button>
               <button onClick={handleScreenshot} className="col-span-2 bg-purple-600 hover:bg-purple-700 font-medium py-3 px-4 rounded-lg">
-                📸 Chụp màn hình
+                📸 Screenshot
               </button>
             </div>
           </div>
 
           <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
-            <h2 className="text-lg font-bold mb-4">🔧 Cấu hình</h2>
+            <h2 className="text-lg font-bold mb-4">🔧 Config</h2>
             <div className="space-y-3">
               <div>
-                <span className="text-sm text-slate-400">Thời gian mua phôi:</span>
+                <span className="text-sm text-slate-400">Mua phôi:</span>
                 <div className="flex gap-2 mt-1">
                   <input
                     type="number"
@@ -937,30 +884,7 @@ function App() {
                   </button>
                 </div>
                 <div className="text-xs text-slate-500 mt-1">
-                  Hiện tại: {stats?.remote_config?.buy_duration_minutes || 15}p
-                </div>
-              </div>
-              <div>
-                <span className="text-sm text-slate-400">Mục tiêu tháng:</span>
-                <input
-                  type="number"
-                  value={monthlyGoal}
-                  onChange={(e) => setMonthlyGoal(parseInt(e.target.value) || 500)}
-                  className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white mt-1"
-                />
-              </div>
-              
-              {/* MỚI: Thông tin tự động điều chỉnh */}
-              <div className="mt-3 p-3 bg-green-900/20 rounded-lg border border-green-700">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-green-400">⚙️ Tự động điều chỉnh thời gian mua:</span>
-                  <span className="text-green-300 text-sm font-bold">✅ BẬT</span>
-                </div>
-                <div className="text-xs text-green-500 mt-2">
-                  📌 Mục tiêu: 20p/lần đập | Min: 5p | Max: 60p
-                </div>
-                <div className="text-xs text-slate-400 mt-1">
-                  Công thức: Mua mới = Mua cũ × (20 / Đập thẻ)
+                  Hiện tại: {stats?.remote_config?.buy_duration_minutes || 15}p | Min: 10p | Max: 30p
                 </div>
               </div>
             </div>
@@ -982,7 +906,7 @@ function App() {
           </div>
         )}
 
-        {/* Logs with Filter */}
+        {/* Logs */}
         <div id="logs" className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
           <div className="flex justify-between items-center mb-4">
             <h2 className="text-lg font-bold">📜 Logs</h2>
@@ -1014,6 +938,46 @@ function App() {
             )}
           </div>
         </div>
+
+        {/* CT History */}
+        <div id="history" className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="text-lg font-bold">📜 Lịch sử CT</h2>
+            <button onClick={exportToCSV} className="bg-green-600 hover:bg-green-700 px-3 py-1 rounded text-sm">
+              📥 Export
+            </button>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-700">
+                  <th className="text-left py-2 px-2">Thời gian</th>
+                  <th className="text-left py-2 px-2">Loop</th>
+                  <th className="text-left py-2 px-2">Mode</th>
+                  <th className="text-left py-2 px-2">Phút</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ctHistory.length === 0 ? (
+                  <tr><td colSpan="4" className="text-center py-8 text-slate-500">Chưa có</td></tr>
+                ) : (
+                  ctHistory.slice(0, 10).map((ct) => (
+                    <tr key={ct.id} className="border-b border-slate-700/50">
+                      <td className="py-2 px-2 text-xs">{ct.date} {ct.time}</td>
+                      <td className="py-2 px-2">#{ct.loop_number}</td>
+                      <td className="py-2 px-2">
+                        <span className={`px-2 py-0.5 rounded text-xs ${ct.mode === '+3' ? 'bg-green-900/50' : 'bg-orange-900/50'}`}>
+                          {ct.mode}
+                        </span>
+                      </td>
+                      <td className="py-2 px-2">{Math.round(ct.duration_seconds / 60)}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </main>
 
       {/* Screenshot Modal */}
@@ -1032,7 +996,7 @@ function App() {
       {/* Footer */}
       <footer className="border-t border-slate-800 py-4 mt-8">
         <div className="max-w-7xl mx-auto px-4 text-center text-xs text-slate-500">
-          FCO Dashboard v3.1 — Full Analytics & Remote Control + Upgrade Time Tracking
+          FCO Dashboard v4.0 — Multi-Account + BP Profit Tracking
         </div>
       </footer>
     </div>
